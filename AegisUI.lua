@@ -6,7 +6,7 @@
 	remote code, no executor-specific global outside a pcall.
 
 	USAGE
-	    -- once per session: execute this file (aegis exec Scripts\AegisUI.lua)
+	    -- once per session: execute this file (aegis exec Scripts\AegisUI\AegisUI.lua)
 	    -- then, from any later chunk:
 	    local AegisUI = getgenv().AegisUI.lib
 
@@ -518,18 +518,35 @@ function AegisUI:MakeWindow(options)
 		BorderSizePixel = 0,
 	}, body)
 	pad(sidebar, 8, 8, 8, 8)
-	vlist(sidebar, 4)
 
+	-- The divider belongs to the body, not the sidebar. A child of a frame that
+	-- owns a UIListLayout is laid out as a row, so a 1-scale-high divider would
+	-- be a full-height row and push every tab out of the panel.
 	create("Frame", {
-		Name = "Divider",
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, 0, 0, 0),
+		Name = "SidebarDivider",
+		Position = UDim2.fromOffset(131, 0),
 		Size = UDim2.new(0, 1, 1, 0),
 		BackgroundColor3 = theme.line,
 		BackgroundTransparency = 0.5,
 		BorderSizePixel = 0,
 		ZIndex = 5,
+	}, body)
+
+	-- Tab rail: fixed height with its own canvas, so however many tabs are
+	-- added they scroll instead of shoving the unload button off the panel.
+	local tabList = create("ScrollingFrame", {
+		Name = "TabList",
+		Size = UDim2.new(1, 0, 1, -46),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ScrollBarThickness = 2,
+		ScrollBarImageColor3 = theme.line,
 	}, sidebar)
+	vlist(tabList, 4)
+	win.TabList = tabList
 
 	local content = create("Frame", {
 		Name = "Content",
@@ -539,20 +556,29 @@ function AegisUI:MakeWindow(options)
 		ClipsDescendants = true,
 	}, body)
 
-	local unloadBtn = create("TextButton", {
-		Name = "Unload",
-		LayoutOrder = 100000,
-		Size = UDim2.new(1, 0, 0, 24),
-		BackgroundColor3 = theme.row,
-		BorderSizePixel = 0,
-		Font = Enum.Font.GothamSemibold,
-		Text = "Unload",
-		TextSize = 11,
-		TextColor3 = theme.err,
-		AutoButtonColor = false,
-	}, sidebar)
-	corner(unloadBtn, 6)
-	stroke(unloadBtn, theme.line, 0.6)
+	-- Every window ships an unload button, created and wired by the library:
+	-- the panel is the lib's, so the way out of it is too. Pinned to the bottom
+	-- of the sidebar so it is always reachable and never scrolled away, and it
+	-- remains the only control that exits (docs/AUTHORING.md "one way out").
+	local unloadBtn
+	if options.ShowUnload ~= false then
+		unloadBtn = create("TextButton", {
+			Name = "Unload",
+			AnchorPoint = Vector2.new(0, 1),
+			Position = UDim2.new(0, 0, 1, 0),
+			Size = UDim2.new(1, 0, 0, 24),
+			BackgroundColor3 = theme.row,
+			BorderSizePixel = 0,
+			Font = Enum.Font.GothamSemibold,
+			Text = tostring(options.UnloadLabel or "Unload"),
+			TextSize = 11,
+			TextColor3 = theme.err,
+			AutoButtonColor = false,
+		}, sidebar)
+		corner(unloadBtn, 6)
+		stroke(unloadBtn, theme.line, 0.6)
+		win.UnloadButton = unloadBtn
+	end
 
 	------------------------------------------------------------------
 	-- notifications
@@ -660,7 +686,7 @@ function AegisUI:MakeWindow(options)
 			TextColor3 = theme.dim,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			AutoButtonColor = false,
-		}, sidebar)
+		}, tabList)
 		corner(button, 6)
 		pad(button, 0, 0, 8, 8)
 
@@ -917,9 +943,11 @@ function AegisUI:MakeWindow(options)
 		return true
 	end
 
-	on(unloadBtn.MouseButton1Click, function()
-		win:Unload("panel")
-	end)
+	if unloadBtn then
+		on(unloadBtn.MouseButton1Click, function()
+			win:Unload("button")
+		end)
+	end
 
 	------------------------------------------------------------------
 	-- content is complete: now it may be shown
