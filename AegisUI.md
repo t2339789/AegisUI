@@ -1,54 +1,77 @@
 # AegisUI
 
-A self-contained Roblox UI library for scripts in this tree. No remote assets,
-no `loadstring` of third-party code, no executor global used outside a `pcall`.
+A self-contained Roblox UI library for scripts in this tree. No remote assets, no
+third-party code, no executor global used outside a `pcall`. It is published, so
+consumers normally fetch it over http rather than importing a local file.
 
 | File | Role |
 |---|---|
-| `Scripts/AegisUI.lua` | the library |
-| `Scripts/aegisui_demo.lua` | a consumer that exercises every element |
-| `tools/aegisui_smoke_test.lua` | offline harness (strict mock), 99 checks |
+| `Scripts/AegisUI/AegisUI.lua` | the library — source of truth |
+| `Scripts/AegisUI/README.md` | this file |
+| `Scripts/aegisui_demo.lua` | consumer; fetches the published copy over http |
+| `tools/aegisui_smoke_test.lua` | offline harness (strict mock) |
 
 ## Load it
 
-`exec` runs each chunk in a fresh environment, but `getgenv()` survives across
-chunks, so the library is loaded once per session:
+Published copy: <https://github.com/t2339789/AegisUI>. Scripts use the raw URL:
 
-```powershell
-.\aegis.cmd exec Scripts\AegisUI.lua --no-capture
-.\aegis.cmd exec Scripts\aegisui_demo.lua --no-capture
-.\aegis.cmd eval "local d=getgenv().AegisUIDemo print(d and d.state.runs, d and d.state.note)"
+```lua
+local AegisUI = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/t2339789/AegisUI/main/AegisUI.lua"))()
 ```
 
-From any later script:
+The library also publishes itself on `getgenv()`, which survives across exec
+chunks (`docs/AUTHORING.md` section 3), so any later chunk can pick it up:
 
 ```lua
 local AegisUI = getgenv().AegisUI.lib
 ```
 
-The handle is published when the library chunk runs, before any window exists,
-so this works even if nothing has been drawn yet.
+To run the local file without http while developing:
+
+```powershell
+.\aegis.cmd exec Scripts\AegisUI\AegisUI.lua --no-capture
+.\aegis.cmd exec Scripts\aegisui_demo.lua --no-capture
+.\aegis.cmd eval "local d=getgenv().AegisUIDemo print(d and d.state.runs, d and d.state.note)"
+```
+
+The local file is the source of truth; the URL serves whatever was pushed last,
+so publish before running anything that fetches it.
 
 ## Build a window
 
 ```lua
 local Win = AegisUI:MakeWindow({
-    Name     = "My Script",
-    Subtitle = "v1",
-    Width    = 480,          -- optional
-    Height   = 340,          -- optional
-    Theme    = { accent = Color3.fromRGB(96, 214, 255) },  -- optional, per key
-    OnUnload = function(reason) print("closed", reason) end,
+    Name        = "My Script",
+    Subtitle    = "v1",
+    Width       = 480,        -- optional, default 480
+    Height      = 340,        -- optional, default 340
+    Theme       = { accent = Color3.fromRGB(96, 214, 255) },   -- optional, per key
+    ShowUnload  = true,       -- optional, default true; false omits the button
+    UnloadLabel = "Unload",   -- optional, default "Unload"
+    OnUnload    = function(reason) end,   -- reason: "button" | "api" | your own string
 })
 
 local Tab = Win:MakeTab("Main")
 local Sec = Tab:MakeSection("Automation")
 ```
 
+## Window surface
+
+* `Win:MakeTab(title)`, `Win:SelectTab(tab)`
+* `Win:Notify({...})`, `Win:Collapse()`, `Win:Restore()`, `Win:Unload(reason)`
+* handles: `Win.Panel`, `Win.Badge`, `Win.TabList`, `Win.UnloadButton`
+
+Every window gets its own unload button, created and wired by the library — a
+consumer script never has to add one. It is pinned to the bottom of the sidebar
+so it cannot be scrolled away by a long tab list, and it is the only control
+that exits. `ShowUnload = false` omits it when a script genuinely needs no exit
+(the panel is then removed only by `Win:Unload()` / `api.unload()`).
+
 ## Elements
 
-Every element returns an object with `Set`, `Get`, `Destroy` and `Instance`
-(the underlying Instance). Elements that take a `Flag` are registered globally.
+Every element returns an object with `Set`, `Get`, `Destroy` and `Instance` (the
+underlying Instance). Elements that take a `Flag` are registered globally.
 
 ```lua
 Sec:MakeButton({ Text = "Run", Callback = function() end })
@@ -64,8 +87,8 @@ Sec:MakeLabel({ Text = "status" })     -- TextWrapped, AutomaticSize
 Sec:MakeDivider()
 ```
 
-Dropdowns expand inline (accordion) rather than overlaying, so no parent
-clipping can hide the option list.
+Dropdowns expand inline (accordion) rather than overlaying, so no parent clipping
+can hide the option list.
 
 Notifications:
 
@@ -106,13 +129,15 @@ can assert on it.
 
 ```powershell
 cd C:\Users\JaeB8\OneDrive\Desktop\AegisInject
-py -3 tools\check_script_syntax.py Scripts\AegisUI.lua Scripts\aegisui_demo.lua tools\aegisui_smoke_test.lua
+py -3 tools\check_script_syntax.py Scripts\AegisUI\AegisUI.lua Scripts\aegisui_demo.lua tools\aegisui_smoke_test.lua
 py -3 -c "import lupa; lupa.LuaRuntime().execute(open('tools/aegisui_smoke_test.lua',encoding='utf-8').read())"
 ```
 
 The harness runs the library and the demo against a mock that raises on an
-unknown class, an unknown property, or a wrong-typed property, and that records
-a contract violation if any ScreenGui is ever enabled while unparented.
+unknown class, an unknown property, or a wrong-typed property, and that records a
+contract violation if any ScreenGui is ever enabled while unparented. It serves
+the published URL out of the local file, so the demo's http path is exercised
+offline; the two copies are byte-identical (checked by hash).
 
 ## Known limits
 
