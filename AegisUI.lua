@@ -866,15 +866,31 @@ function AegisUI:MakeWindow(options)
 	corner(mark, 7)
 	gradient(mark, 45)
 
-	local glyphText = tostring(options.Glyph or string.sub(tostring(options.Name or "AegisUI"), 1, 1))
-	paint("TextLabel", {
+	-- The Aegis mark, drawn instead of shipped as an image: a dark shield with a
+	-- gradient A cut into it, over the gradient tile.  aegis_logo.svg cannot be
+	-- given to an ImageLabel (no SVG support) and getcustomasset would need the
+	-- bytes written to disk first, so the mark is reconstructed here from two
+	-- frames and a glyph.  `Glyph` overrides the A for a different product mark.
+	local shield = create("Frame", {
+		Name = "Shield",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(15, 18),
+		BackgroundColor3 = Color3.fromRGB(14, 22, 32),
+		BorderSizePixel = 0,
+	}, mark)
+	corner(shield, 4)
+
+	local glyph = create("TextLabel", {
 		Name = "Glyph",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromScale(1, 1),
 		Font = Enum.Font.GothamBlack,
-		Text = string.upper(glyphText),
-		TextSize = 14,
-	}, mark, { TextColor3 = "bg" })
+		Text = string.upper(tostring(options.Glyph or "A")),
+		TextSize = 12,
+		TextColor3 = Color3.new(1, 1, 1),
+	}, shield)
+	gradient(glyph, 45)
 
 	local title = paint("TextLabel", {
 		Name = "Title",
@@ -1149,7 +1165,12 @@ function AegisUI:MakeWindow(options)
 			AutoButtonColor = false,
 		}, tabList)
 		corner(button, 8)
-		pad(button, 0, 0, icon and 30 or 14, 8)
+		-- UIPadding shifts a child's Position as well as the button's text, so
+		-- the indicator below has to be offset back out of the padding.  With an
+		-- icon the gutter is 30, and a bare x = 3 put the accent bar straight
+		-- through the first character of the label.
+		local gutter = icon and 30 or 14
+		pad(button, 0, 0, gutter, 8)
 
 		local iconLabel
 		if icon then
@@ -1168,7 +1189,7 @@ function AegisUI:MakeWindow(options)
 		local indicator = create("Frame", {
 			Name = "Indicator",
 			AnchorPoint = Vector2.new(0, 0.5),
-			Position = UDim2.new(0, 3, 0.5, 0),
+			Position = UDim2.new(0, 2 - gutter, 0.5, 0),
 			Size = UDim2.fromOffset(3, 6),
 			BackgroundColor3 = theme.accent,
 			BackgroundTransparency = 1,
