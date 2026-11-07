@@ -1,269 +1,279 @@
-# AegisUI v3
+# AegisUI v3 — Product and UI Architecture
 
-AegisUI v3 is a cleanup and consolidation release aimed at replacing the current monolithic design with a more maintainable, testable, and documentation-aligned API while preserving the library’s strongest guarantees:
+This document expands the v3 roadmap into a component and layout plan for richer, composable interfaces. It is a design specification, not a claim that these APIs or components already exist in the published v2 source.
 
-- GUI is created disabled, parented, fully built, then enabled.
-- Unloading is explicit and single-path.
-- Controls with flags remain readable and writable from later execution chunks.
-- A previous instance is swept and its connections are disconnected.
-- The library remains self-contained and executor-safe.
+## Product goal
 
-## Goals
+Make AegisUI a capable, dependable Roblox UI toolkit for both compact control panels and dense data-oriented interfaces. “Capable” should mean users can compose new layouts from stable primitives—not merely that the library has the longest list of widgets.
 
-1. Reduce implementation risk
-   - Split the current large Lua file into focused modules.
-   - Keep behaviour explicit and easier to unit-test through a mock runtime.
+Priorities:
 
-2. Align code and documentation
-   - Remove mismatch between the documentation and the implementation.
-   - Publish a single source of truth for supported features.
+1. Reliable state and lifecycle contracts.
+2. Composable layout primitives and rich data views.
+3. Good behavior at small screen sizes and with large datasets.
+4. Consistent themes, interaction states, and accessibility cues.
+5. A verifiable API, examples, and tests for each shipped feature.
 
-3. Improve maintainability
-   - Make theme, flag registry, lifecycle, and element definitions independent concerns.
-   - Keep the public API stable while improving internals.
+## Research and design references
 
-4. Make the library easier to extend
-   - Add a consistent element contract: `Set`, `Get`, `Destroy`, `Instance`, `Flag`, `NoSave`.
-   - Keep window construction and element creation in a common builder pattern.
+The following public projects offer useful, different design lessons. They are references for patterns, not dependencies to copy wholesale:
 
-## v3 design principles
+- [Roblox/Roact](https://github.com/Roblox/roact) demonstrates a declarative tree, component composition, and explicit mount/unmount lifecycle. Its README says it is deprecated and points users to [React Lua](https://github.com/Roblox/react-lua), so use it as a historical design reference rather than a recommended new dependency.
+- [SirMallard/Iris](https://github.com/SirMallard/Iris) demonstrates immediate-mode UI for debug and visualization tools, including concise widget calls, state objects, tree composition, and a demo window that teaches the API. Its approach is valuable for fast tool-building, but a retained-mode control-panel library should not adopt an every-frame rebuild model without a deliberate performance and state plan.
+- [Footagesus/WindUI](https://github.com/Footagesus/WindUI) demonstrates a broad control-panel component surface, theming, examples, and published documentation. Its repository describes the project as beta, which is a reminder to distinguish documented/stable features from experimental ones.
 
-### 1. Keep the public API familiar
+These comparisons suggest that v3 should combine the discoverability of a widget API, the composability of declarative UI, and the practical ergonomics of retained controls—without taking a dependency on these libraries.
 
-Compatibility with the current flow is preserved:
+## Core architecture
+
+### Keep state separate from presentation
+
+Controls should read and write through a small state/binding layer rather than directly modifying sibling Instances. A binding can be a named flag, a local state object, or a derived value. UI updates should be scheduled only when the relevant value changes.
+
+Concept sketch (proposed, not implemented):
 
 ```lua
-local AegisUI = loadstring(game:HttpGet(
-  "https://raw.githubusercontent.com/t2339789/AegisUI/main/AegisUI.lua"
-))()
+local enabled = AegisUI.State(false)
+local mode = AegisUI.State("Manual")
 
-local Win = AegisUI:MakeWindow({
-  Name = "My Script",
-  Subtitle = "v3",
-  Width = 500,
-  Height = 360,
-  Theme = "Midnight",
+section:MakeToggle({ Text = "Enabled", State = enabled })
+section:MakeCheckbox({ Text = "Enable diagnostics", State = enabled })
+section:MakeDropdown({ Text = "Mode", State = mode, Options = { "Manual", "Auto" } })
+```
+
+A checkbox and toggle bound to the same state are two views of one boolean, not two separately synchronized values. Setting either one updates the state once; both views render the new value. The existing `Flag` API remains supported as a convenient named binding.
+
+### Element contract
+
+All elements should follow one lifecycle and value contract:
+
+- `Set(value, options?)` validates and updates the value.
+- `Get()` returns the current value.
+- `Destroy()` is idempotent and removes event listeners, registry entries, and Instances.
+- `Update(props)` applies supported live property changes where useful.
+- `Instance` exposes the root Instance for advanced customization.
+- Optional `Flag`, `State`, `NoSave`, and `Changed` metadata follow consistent rules.
+
+Element callbacks should have documented semantics: whether defaults invoke callbacks, whether unchanged values are ignored, how `silent` applies, and how callback errors are reported. Do not silently swallow validation errors that users need to fix.
+
+### Layout primitives before more widgets
+
+Add a small set of composable containers so complex designs do not require a bespoke API for every arrangement:
+
+- `MakeSection` / collapsible section with title, description, accessory slot, and badge slot.
+- `MakeGroup` for related controls, with vertical or horizontal flow.
+- `MakeColumns` for responsive multi-column layouts.
+- `MakeCard` for an independently themed bordered surface.
+- `MakeScrollArea` with explicit canvas and sizing behavior.
+- `MakeSpacer`, `MakeDivider`, and `MakeText` / paragraph primitives.
+- Optional `MakeCustom`/slot escape hatch for user-provided Roblox Instances, with clear ownership and cleanup rules.
+
+Containers should compose through a common child API, not require hardcoded paths in the UI tree. Every container must document clipping, scrolling, automatic sizing, and what `Destroy()` owns.
+
+## Expanded component catalog
+
+### Status badges and count indicators
+
+Provide both standalone and inline badge forms:
+
+- `MakeBadge({ Text = "LIVE", Tone = "success" })`
+- `section:MakeToggle({ ..., Badge = { Text = "BETA", Tone = "warning" } })`
+- Tab and section count badges that can update without rebuilding the item.
+
+Support semantic tones (`neutral`, `info`, `success`, `warning`, `danger`) that map to theme tokens; allow an explicit color override. Badge text should size safely, truncate or wrap by policy, and remain legible in light and dark themes. Badges communicate status only; they should not be the only indication of state.
+
+### Checkbox and toggle family
+
+Checkboxes and toggles share boolean state semantics and validation, but can have different presentation:
+
+- `MakeCheckbox`: compact form rows, table cells, and multi-option lists.
+- `MakeToggle`: prominent on/off setting with an animated track.
+- Optional tri-state checkbox (`false`, `true`, `"mixed"`) for parent selections and matrix/table bulk state.
+- `Indeterminate` should be a derived visual state when bound to child values; it must not overwrite those values implicitly.
+- `Enabled`, `Visible`, and `ReadOnly` should be distinct properties. Disabled controls do not accept input; read-only controls can remain focusable and inspectable.
+
+Dynamic visibility/enabled state should use a binding or predicate, with dependencies explicit so updates are predictable:
+
+```lua
+section:MakeCheckbox({
+  Text = "Advanced mode",
+  State = advanced,
+  Flag = "AdvancedMode",
 })
 
-local Tab = Win:MakeTab("Main")
-local Sec = Tab:MakeSection("Automation")
-```
-
-The public methods remain the same where possible:
-
-- `AegisUI:MakeWindow(options)`
-- `Win:MakeTab(title)`
-- `Tab:MakeSection(title)`
-- `Sec:MakeButton`, `MakeToggle`, `MakeSlider`, `MakeTextBox`, `MakeDropdown`, etc.
-- `AegisUI:Set`, `AegisUI:Get`, `AegisUI:GetAll`
-- `api.set`, `api.get`, `api.getall`, `api.unload`
-
-### 2. Separate concerns into modules
-
-The current monolithic file should be split into a small folder structure.
-
-```text
-AegisUI/
-  AegisUI.lua
-  core/
-    init.lua
-    types.lua
-    helpers.lua
-    lifecycle.lua
-    registry.lua
-    theme.lua
-    persistence.lua
-  ui/
-    window.lua
-    tabs.lua
-    sections.lua
-    elements/
-      base.lua
-      button.lua
-      toggle.lua
-      slider.lua
-      textbox.lua
-      dropdown.lua
-      keybind.lua
-      colorpicker.lua
-      progress.lua
-      label.lua
-      divider.lua
-      notification.lua
-  docs/
-    README.md
-    migration-v2-to-v3.md
-```
-
-### 3. Keep a single “ground truth” registry
-
-The v3 registry should own:
-
-- active flags
-- active values
-- config import/export state
-- opened windows
-- connections for teardown
-
-This ensures later chunks can inspect or drive flags without relying on stale state after unload or a sweep.
-
-### 4. Standardize element contracts
-
-Every element should fully conform to a common shape:
-
-```lua
-local element = {
-  Instance = instance,
-  Flag = "AutoFarm",
-  NoSave = false,
-}
-
-function element:Set(value, silent)
-  -- update backing state
-end
-
-function element:Get()
-  -- read state
-end
-
-function element:Destroy()
-  -- disconnect, clear refs, remove instance
-end
-```
-
-All elements should:
-
-- return an object with `Set`, `Get`, `Destroy` and `Instance`
-- register into the flag table when a `Flag` is present
-- support a `silent` mode where appropriate for config imports
-- use local `fire` or `defer` wrappers to avoid blocking UI updates
-
-## Proposed v3 API
-
-### Window API
-
-```lua
-local Win = AegisUI:MakeWindow({
-  Name = "My Script",
-  Subtitle = "v1",
-  Width = 480,
-  Height = 340,
-  Theme = "Midnight",
-  ShowUnload = true,
-  OnUnload = function(reason) end,
+section:MakeSlider({
+  Text = "Detail level",
+  VisibleWhen = function() return advanced:Get() end,
+  Min = 1,
+  Max = 10,
 })
 ```
 
-### Window methods
+The library should specify whether hidden values remain in config and whether hiding a control affects its state. Default recommendation: hidden controls retain their value; dynamic UI visibility does not reset user data.
+
+### Tables
+
+`MakeTable` should be schema-driven and separate row data from cell rendering. A table should support:
+
+- typed columns (`text`, `number`, `boolean`, `badge`, custom renderer), widths, alignment, and optional sorting
+- stable row keys supplied by the caller
+- row selection and selected-row callbacks
+- optional search/filter controls, pagination, and empty/loading/error states
+- sticky header where Roblox layout allows it
+- row actions and per-cell custom content
+- editable cells only when explicitly configured, with validation and clear commit/cancel behavior
+- safe updates through methods such as `SetRows`, `InsertRow`, `UpdateRow`, `RemoveRow`, and `SetSort`
+
+Use a virtualized row renderer or a documented row limit for large datasets. Do not create thousands of Instances by default. Sorting/filtering must operate on model data, preserve stable keys, and avoid reordering user data in place unless explicitly requested.
+
+Proposed usage:
 
 ```lua
-Win:MakeTab("Main")
-Win:SelectTab(tab)
-Win:Notify({ Title = "Done", Text = "Saved", Type = "success", Duration = 3 })
-Win:Collapse()
-Win:Restore()
-Win:Unload(reason)
+local tableView = section:MakeTable({
+  Columns = {
+    { Key = "name", Title = "Name", Width = 180, Sortable = true },
+    { Key = "state", Title = "State", Type = "badge" },
+    { Key = "enabled", Title = "Enabled", Type = "checkbox" },
+  },
+  RowKey = "id",
+  Rows = rows,
+  OnRowActivated = function(row) end,
+})
+
+tableView:UpdateRow("worker-1", { enabled = true })
 ```
 
-### Global API
+### Matrix / permission grid
+
+A matrix is a specialized data view with row entities and column capabilities, useful for permissions, feature combinations, and compact configuration. It should build on the same row/column model as tables rather than invent a separate state system.
+
+Support:
+
+- fixed or scrollable row and column headers
+- row labels and column labels with optional badges/tooltips
+- boolean cells rendered as checkboxes, plus read-only/status cells
+- per-cell disabled state and explanatory reason
+- row, column, and whole-grid select/clear actions
+- derived mixed state for row/column header checkboxes
+- stable row/column IDs independent of displayed labels
+- cell-level callback and bulk-change callback with changed-cell list
+- optional search/filter for rows and columns
+- keyboard/gamepad focus navigation where supported
+- size thresholds and virtualization for large matrices
+
+Store values by stable IDs, for example `values[rowId][columnId]`; do not bind cells by visible display text. A bulk operation should apply only to eligible cells, report exactly what changed, and make its callback behavior consistent with individual cell changes.
+
+Proposed usage:
 
 ```lua
-local api = getgenv().AegisUI.api
-api.set("AutoFarm", true)
-api.get("AutoFarm")
-api.getall()
-api.collapse()
-api.restore()
-api.notify({ Title = "Hi", Text = "There" })
-api.unload()
+local permissions = section:MakeMatrix({
+  Rows = roles,
+  Columns = actions,
+  RowKey = "id",
+  ColumnKey = "id",
+  State = permissionState,
+  Cell = {
+    Type = "checkbox",
+    CanEdit = function(row, column) return row.editable ~= false end,
+  },
+  OnChanged = function(changes) end,
+})
+
+permissions:SetCell("moderator", "manage", true)
 ```
 
-## Major v3 improvements
+### Other high-value components
 
-### A. Theme system hardening
+Build breadth in coherent families instead of isolated one-off controls:
 
-v3 should make theme handling more explicit:
+- Searchable single-select and multi-select dropdowns with stable option IDs, disabled options, and clear behavior.
+- Radio groups for mutually exclusive values.
+- Segmented controls for short mutually exclusive choices.
+- Numeric and text inputs with validation, formatting, and clear error states.
+- Range slider where a two-ended interval is a real use case.
+- Progress/status row with determinate and indeterminate modes.
+- Keybind display/capture with explicit input ownership and cancellation.
+- Color picker with color/alpha support where the runtime supports it.
+- Inline alert/callout and empty/loading/error-state components.
+- Tooltip/popover and context menu with focus, clipping, and dismissal rules.
+- Tabs, breadcrumbs, accordions, and command/search palette for larger information architectures.
+- Optional chart/plot primitives as a separate module; keep charting out of the core bundle until there is a tested use case.
 
-- exported preset names: `Midnight`, `Ember`, `Moss`, `Orchid`, `Daylight`
-- `Win:SetTheme(spec)` consistently updates the entire tree
-- `spec` accepts either a preset, partial table, or `{ Preset = "Ember", accent = ... }`
-- each element stores its own visual state but reads from the shared window theme
+## Interaction, accessibility, and responsive design
 
-### B. Config persistence contract
+- Use Roblox-native interactive controls and input signals where possible; avoid invisible hit targets that cannot be focused or tested.
+- Provide visible hover, pressed, focused, disabled, selected, and error states.
+- Ensure text scale and row height remain usable on smaller screens; prefer scale-aware constraints and wrapping over fixed-width assumptions.
+- Respect text direction and long labels where Roblox text components allow it.
+- Add keyboard/gamepad navigation and predictable focus order for grids, menus, and dialogs.
+- Tooltips supplement labels; they do not replace essential instructions.
+- Provide reduced-motion configuration and avoid motion as the sole way to convey state.
+- Use semantic theme tokens for surfaces, text, borders, focus, and status; validate contrast for all built-in presets.
 
-The current docs say config persistence is not implemented; the source includes config export/import/save/load APIs. v3 should finalize this contract and document the actual behavior.
+## Performance and reliability guardrails
 
-Recommended rules:
+Complex widgets multiply Instances and connections. v3 should establish limits and measure them:
 
-- `SaveConfig` and `LoadConfig` should only work when executor file access is available.
-- `ExportConfig` / `ImportConfig` should work without files.
-- `NoSave` flags must be excluded.
-- color values must round-trip cleanly via JSON-safe encoding.
+- Virtualize or page long tables and matrices; document when rows are not virtualized.
+- Reuse row/cell templates where safe and disconnect their old bindings before reuse.
+- Update only cells affected by changed data; avoid rebuilding the full table on every state change.
+- Avoid per-frame polling for retained components.
+- Make event and tween cleanup part of element destruction.
+- Add stress tests for hundreds of rows/cells, repeated theme changes, repeated mount/unmount, and rapid state updates.
+- Provide optional instrumentation (element count, render/update timing) for development builds.
 
-### C. Duplicate instance protection
+## Documentation and examples
 
-The current code sweeps previous AegisUI GUI instances and clears flag state. v3 should preserve this as a strict contract and validate it in the smoke test suite.
+A rich component library needs a browsable catalog and examples, not just a long API list. Every component page/example should state:
 
-### D. Strict internal tests
+- constructor options and defaults
+- returned methods and value shape
+- state/flag binding behavior
+- callback timing and silent mode behavior
+- theme and disabled/read-only behavior
+- lifecycle/cleanup ownership
+- limits and known visual/runtime caveats
 
-AegisUI v3 should ship with a mock harness that asserts:
+Add a showcase/demo that contains one example of every stable component and combined layouts, including a searchable table, a permission matrix, dynamic fields, shared checkbox/toggle state, badges, empty/loading states, and a narrow-screen layout. Keep the demo runnable and covered by the same mock/smoke checks where possible.
 
-- no ScreenGui is enabled while unparented
-- all connection cleanup occurs on unload or sweep
-- all flag values remain available after a later chunk reads them
-- a destroyed window cannot keep stale references alive
-- theme updates reach all previously created elements
+## Phased delivery
 
-## v3 migration plan
+### Phase 1 — Foundations
 
-### Breaking changes
+Finalize the element contract, state/binding layer, theme tokens, reusable layout containers, validation, and lifecycle/test harness. Reconcile v2 documentation with actual behavior first.
 
-The following may be accepted in a major version if needed:
+### Phase 2 — Everyday composition
 
-- explicit `Theme` structure normalization
-- stricter validation of option tables
-- removal of undocumented or ambiguous config semantics
-- more consistent `Callback` behaviour for controls
+Ship badges, groups/cards/columns, checkbox/radio/segmented controls, dynamic visibility/enabled bindings, and consistent text/input states. Update the component catalog and examples.
 
-### Non-breaking behaviour to keep
+### Phase 3 — Data views
 
-- `Flag` registration stays global, accessible from another chunk
-- `api.set` returns `false` for unknown flag instead of throwing
-- no key unloads; unload remains button/API-only
-- main collapse/restore model remains unchanged
+Ship table model/schema, sorting/filtering/selection, row updates, and performance limits. Then build matrix as a reusable table specialization with derived bulk-selection state.
 
-## Quality gates for v3
+### Phase 4 — Advanced interactions
 
-Before publishing the v3 library, the project should verify:
+Add tooltips/popovers, command palette, additional navigation patterns, and optional plotting only after focus, clipping, cleanup, and performance behavior are tested.
 
-- runtime script syntax checks
-- mock-driven smoke tests for GUI lifecycle
-- theme reflow checks
-- config import/export consistency
-- stale reference cleanup
-- no executor-global leakage beyond safe `pcall` guards
+Do not label a phase feature stable until it has documented behavior, smoke coverage, and a live Roblox visual check.
 
-## Recommended release state
+## References
 
-v3 should be released as:
+- [AegisUI current usage and lifecycle notes](https://github.com/t2339789/AegisUI/blob/main/AegisUI.md)
+- [AegisUI v3 roadmap](https://github.com/t2339789/AegisUI/blob/main/AegisUI_v3.md)
+- [Roblox/Roact](https://github.com/Roblox/roact) — declarative composition reference; repository is deprecated.
+- [Roblox React Lua](https://github.com/Roblox/react-lua) — successor referenced by Roact.
+- [SirMallard/Iris](https://github.com/SirMallard/Iris) — immediate-mode widgets and demo-oriented tool design.
+- [Footagesus/WindUI](https://github.com/Footagesus/WindUI) — broad Roblox control-panel component and documentation reference.
 
-- a documented, versioned source
-- a published README that matches actual API behaviour exactly
-- a smoke test harness included in the repository
-- a short migration note for users of v2
+## Success criteria
 
-This is the key improvement the project needs: not just a visual refresh, but a stronger contract between code, documentation, and runtime behaviour.
+AegisUI v3 should be judged by whether a user can build a polished, data-rich panel with predictable state and lifecycle—not by a feature-count claim. Initial acceptance criteria:
 
-## Summary
-
-AegisUI v3 is not a rewrite for style alone. It is a maintenance release focused on three things:
-
-- reduce complexity by splitting the large implementation
-- improve correctness by clarifying the lifecycle and config contract
-- improve trust by aligning docs and implementation with verified runtime behaviour
-
-This would turn the project from a strong but occasionally opaque one-file library into a more durable and professional UI framework.
-
----
-
-This document is intentionally written as a design and migration note for the next version and can be turned into an implementation checklist or a new source tree once the project is ready.
+- A checkbox and toggle bound to the same state stay synchronized without duplicate callback updates.
+- Dynamic visibility/enabled rules update from declared dependencies and do not silently erase values.
+- Table and matrix rows/cells use stable IDs and update incrementally.
+- Bulk matrix changes correctly report eligible cells and derive mixed selection state.
+- Theme changes restyle new and existing components consistently.
+- Destroying/rebuilding complex views leaves no event connections or registry entries behind.
+- Large views remain responsive under a documented and tested scale.
+- The published documentation, demo, and source agree on every stable API.
