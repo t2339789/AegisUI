@@ -1,5 +1,5 @@
 --[[
-	AegisUI - v2.0.0
+	AegisUI - v4.0.0
 
 	A self-contained Roblox UI library built to the AegisInject house contract
 	(docs/AUTHORING.md, "Panel lifecycle"). No external assets, no loadstring of
@@ -22,6 +22,25 @@
 	    Sec:MakeKeybind({ Text = "Panic key", Flag = "Panic", Default = "X" })
 	    Sec:MakeColorPicker({ Text = "ESP colour", Flag = "Esp", Default = Color3.fromRGB(96, 214, 255) })
 	    Sec:MakeProgress({ Text = "Progress" })
+
+	NEW IN 4.0
+	  * Shared state. AegisUI.State(default) returns a binding with Get / Set /
+	    On / Toggle; a Checkbox or Segmented control bound to a State is a view
+	    of it, so two views of one State cannot drift apart. Flag bindings are
+	    unchanged and still register in AegisUI.Flags / Values.
+	  * Composability. Section:MakeGroup({Text}) and Section:MakeColumns(n)
+	    return hosts carrying the same component methods as a section, so a
+	    panel can be composed from nested containers instead of one flat list.
+	  * Control surface. MakeCheckbox (compact boolean, left tick), MakeSegmented
+	    (short mutually exclusive choice), MakeBadge (tone chip), MakeAlert
+	    (tone-edged callout), MakeStat (metric tile), MakeSpacer.
+	  * Data views. MakeTable({Columns, Rows}) with flex columns, zebra rows,
+	    right-aligned numerics, badge cells and swatch cells, plus SetRows for
+	    incremental updates.
+	  * Design. Semantic tones (neutral / info / ok / warn / err) applied
+	    consistently across chips, alerts, stats and table badges; section
+	    headers take a Description sub-line and a live Badge
+	    (Section:SetBadge), so state is readable without scrolling.
 
 	NEW IN 2.0
 	  * Visual refresh: soft layered shadow, gradient border and accent rule,
@@ -54,7 +73,50 @@
 local AegisUI = {}
 
 AegisUI.Name    = "AegisUI"
-AegisUI.Version = "2.0.0"
+AegisUI.Version = "4.0.0"
+
+--------------------------------------------------------------------------
+-- 0b. shared state
+--
+-- A view (checkbox, segmented control, toggle) can bind to a State instead of
+-- owning a value, so two controls bound to one State are two views of one
+-- value rather than two values kept in sync by hand. Flags stay supported.
+--------------------------------------------------------------------------
+
+function AegisUI.State(default)
+	local st = { _value = default, _subs = {} }
+
+	function st:Get()
+		return self._value
+	end
+
+	function st:Set(value)
+		if self._value == value then
+			return value
+		end
+		self._value = value
+		-- pcall, not the module's fire(): fire is declared further down and
+		-- would resolve as a nil global from here. A throwing listener must
+		-- not stop the remaining views from updating.
+		for _, fn in ipairs(self._subs) do
+			pcall(fn, value)
+		end
+		return value
+	end
+
+	function st:On(fn)
+		if type(fn) == "function" then
+			self._subs[#self._subs + 1] = fn
+		end
+		return fn
+	end
+
+	function st:Toggle()
+		return self:Set(not self._value)
+	end
+
+	return st
+end
 
 local genv      = (type(getgenv) == "function" and getgenv()) or _G
 local GUI_NAME  = "AegisUI"
@@ -1657,11 +1719,16 @@ function makeSection(tab, sectionSpec)
 	local paint, restyle, gradient = win.__paint, win.__restyle, win.__gradient
 
 	local sectionTitle, startCollapsed = sectionSpec, false
+	local sectionDesc, sectionBadge, sectionTone = nil, nil, nil
 	if type(sectionSpec) == "table" then
 		sectionTitle = sectionSpec.Name or sectionSpec.Title
 		startCollapsed = sectionSpec.Collapsed == true
+		sectionDesc = sectionSpec.Description
+		sectionBadge = sectionSpec.Badge
+		sectionTone = sectionSpec.Tone
 	end
 	local sectionName = tostring(sectionTitle or "Section")
+	local headH = sectionDesc and 50 or 34
 
 	local frame = paint("Frame", {
 		Name = sectionName,
@@ -1679,7 +1746,7 @@ function makeSection(tab, sectionSpec)
 		Name = "Head",
 		LayoutOrder = 0,
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 34),
+		Size = UDim2.new(1, 0, 0, headH),
 		Text = "",
 		AutoButtonColor = false,
 	}, frame)
@@ -1698,13 +1765,29 @@ function makeSection(tab, sectionSpec)
 	local headLabel = paint("TextLabel", {
 		Name = "Title",
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(24, 0),
-		Size = UDim2.new(1, -56, 1, 0),
+		Position = UDim2.fromOffset(24, sectionDesc and 9 or 0),
+		Size = sectionDesc and UDim2.new(1, -56, 0, 16) or UDim2.new(1, -56, 1, 0),
 		Font = Enum.Font.GothamBold,
 		Text = sectionName,
 		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = sectionDesc and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center,
 	}, head, { TextColor3 = "text" })
+
+	local descLabel
+	if sectionDesc then
+		descLabel = paint("TextLabel", {
+			Name = "Description",
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(24, 26),
+			Size = UDim2.new(1, -56, 0, 14),
+			Font = Enum.Font.Gotham,
+			Text = tostring(sectionDesc),
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}, head, { TextColor3 = "dim" })
+	end
 
 	local chevron = paint("TextLabel", {
 		Name = "Chevron",
@@ -2121,6 +2204,8 @@ function makeSection(tab, sectionSpec)
 
 		local value = props.Default == true
 		local disabled = props.Disabled == true
+		local state = props.State
+		local syncing = false
 
 		local function refresh(animate)
 			local t = animate and 0.18 or 0
@@ -2146,6 +2231,13 @@ function makeSection(tab, sectionSpec)
 			if not silent then
 				fire(props.Callback, value)
 			end
+			-- publish to the shared binding; syncing keeps this view's own
+			-- state listener from bouncing the value straight back
+			if not syncing and type(state) == "table" and type(state.Set) == "function" then
+				syncing = true
+				state:Set(value)
+				syncing = false
+			end
 			return value
 		end
 
@@ -2153,6 +2245,19 @@ function makeSection(tab, sectionSpec)
 		restyle(function()
 			refresh(false)
 		end)
+
+		if type(state) == "table" and type(state.Get) == "function" then
+			value = state:Get() == true
+			refresh(false)
+			if type(state.On) == "function" then
+				state:On(function(v)
+					if syncing then return end
+					syncing = true
+					set(v == true, true)
+					syncing = false
+				end)
+			end
+		end
 
 		local element = {}
 		function element:Set(v, silent)
@@ -3170,6 +3275,701 @@ function makeSection(tab, sectionSpec)
 			BorderSizePixel = 0,
 		}, contentFrame, { BackgroundColor3 = "line" })
 		return line
+	end
+
+	------------------------------------------------------------------
+	-- v4.0: tones, composable containers, control and data views
+	--
+	-- Every builder takes an explicit parent frame and order function, so the
+	-- same component can sit directly in a section or inside a group or a
+	-- column. install() binds the whole set onto any host object.
+	------------------------------------------------------------------
+
+	local TONE_KEYS = {
+		-- neutral resolves to `dim`, not `line`: a line-coloured chip on a
+		-- line-tinted background is unreadable on the dark presets
+		neutral = "dim", muted = "dim",
+		info = "accent", accent = "accent",
+		ok = "ok", success = "ok", good = "ok",
+		warn = "warn", warning = "warn",
+		err = "err", error = "err", danger = "err",
+	}
+
+	local function toneColor(tone)
+		if type(tone) == "table" or type(tone) == "userdata" then return tone end
+		return theme[TONE_KEYS[tostring(tone or "neutral")] or "line"] or theme.line
+	end
+
+	-- a chip: text on a tinted pill, sized to its content
+	local function chipAt(parent, order, text, tone, textSize)
+		local c = toneColor(tone)
+		local chip = create("TextLabel", {
+			Name = "Chip",
+			LayoutOrder = order or 0,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(0, 0, 0, 18),
+			BackgroundColor3 = c,
+			BackgroundTransparency = 0.84,
+			BorderSizePixel = 0,
+			Font = Enum.Font.GothamBold,
+			Text = tostring(text or ""),
+			TextSize = textSize or 11,
+			TextColor3 = c,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Center,
+		}, parent)
+		corner(chip, 5)
+		pad(chip, 0, 0, 7, 7)
+		return chip
+	end
+
+	local sectionBadgeChip
+	if sectionBadge then
+		sectionBadgeChip = chipAt(head, nil, sectionBadge, sectionTone or "info", 10)
+		sectionBadgeChip.AnchorPoint = Vector2.new(1, 0.5)
+		sectionBadgeChip.Position = UDim2.new(1, -32, 0.5, 0)
+	end
+
+	-- a bordered sub-panel with an optional caption and a vertical stack
+	local function groupFrame(parent, order, caption, plain)
+		local g = paint("Frame", {
+			Name = tostring(caption or "Group"),
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BorderSizePixel = 0,
+		}, parent, { BackgroundColor3 = "row" })
+		corner(g, 8)
+		-- plain: layout container only, no surface of its own, so tiles and
+		-- tables placed in columns are not cards inside cards
+		if plain then
+			g.BackgroundTransparency = 1
+		else
+			pstroke(paint, g, "line", 0.55)
+		end
+
+		local inner = create("Frame", {
+			Name = "Body",
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+		}, g)
+		pad(inner, caption and 26 or 8, 8, 8, 8)
+		vlist(inner, 5)
+
+		if caption then
+			paint("TextLabel", {
+				Name = "GroupCaption",
+				BackgroundTransparency = 1,
+				Position = UDim2.fromOffset(10, 7),
+				Size = UDim2.new(1, -20, 0, 14),
+				Font = Enum.Font.GothamBold,
+				Text = tostring(caption),
+				TextSize = 10,
+				TextXAlignment = Enum.TextXAlignment.Left,
+			}, g, { TextColor3 = "dim" })
+		end
+		return g, inner
+	end
+
+	local function elementFor(inst, setFn, getFn)
+		local element = {}
+		function element:Set(v)
+			return setFn(v)
+		end
+		function element:Get()
+			return getFn()
+		end
+		function element:Destroy()
+			pcall(function()
+				inst:Destroy()
+			end)
+		end
+		return element
+	end
+
+	local BUILDERS = {}
+
+	------------------------------------------------------------------
+	-- badge: a standalone tone chip (status, counts, plan labels)
+	------------------------------------------------------------------
+
+	BUILDERS.Badge = function(parent, order, props)
+		local chip = chipAt(parent, order, props.Text or "BADGE", props.Tone, props.TextSize)
+		local element = elementFor(chip, function(v)
+			chip.Text = tostring(v or "")
+			return chip.Text
+		end, function()
+			return chip.Text
+		end)
+		function element:SetTone(tone)
+			local c = toneColor(tone)
+			chip.TextColor3 = c
+			chip.BackgroundColor3 = c
+		end
+		return finish(element, props, chip)
+	end
+
+	------------------------------------------------------------------
+	-- checkbox: compact boolean, left-hand tick, State or Flag bound
+	------------------------------------------------------------------
+
+	BUILDERS.Checkbox = function(parent, order, props)
+		local value = props.Default == true
+		local desc = props.Description
+
+		local row = paint("TextButton", {
+			Name = tostring(props.Name or props.Text or "Checkbox"),
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, desc and 50 or 34),
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+		}, parent, { BackgroundColor3 = "row" })
+		corner(row, 8)
+		local edge = pstroke(paint, row, "line", 0.55)
+
+		local box = create("Frame", {
+			Name = "Box",
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 12, 0.5, 0),
+			Size = UDim2.fromOffset(18, 18),
+			BackgroundColor3 = theme.line,
+			BorderSizePixel = 0,
+		}, row)
+		corner(box, 5)
+		pstroke(paint, box, "line", 0.4)
+
+		local tick = create("TextLabel", {
+			Name = "Tick",
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.Code,
+			Text = "",
+			TextSize = 13,
+			TextColor3 = Color3.new(1, 1, 1),
+			ZIndex = 2,
+		}, box)
+
+		local label = rowLabel(row, props.Text or props.Name or "Checkbox", 40, -52, "text")
+		if desc then
+			label.Position = UDim2.fromOffset(40, 8)
+			label.Size = UDim2.new(1, -52, 0, 18)
+			paint("TextLabel", {
+				Name = "Description",
+				BackgroundTransparency = 1,
+				Position = UDim2.fromOffset(40, 28),
+				Size = UDim2.new(1, -52, 0, 14),
+				Font = Enum.Font.Gotham,
+				Text = tostring(desc),
+				TextSize = 11,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}, row, { TextColor3 = "dim" })
+		end
+
+		on(row.MouseEnter, function()
+			tween(row, 0.12, { BackgroundColor3 = theme.hover })
+			tween(edge, 0.12, { Color = theme.accent2, Transparency = 0.45 })
+		end)
+		on(row.MouseLeave, function()
+			tween(row, 0.16, { BackgroundColor3 = theme.row })
+			tween(edge, 0.16, { Color = theme.line, Transparency = 0.55 })
+		end)
+
+		local syncing = false
+		local function apply(v, silent)
+			value = v and true or false
+			box.BackgroundColor3 = value and theme.accent or theme.line
+			tick.Text = value and "\u{2713}" or ""
+			if props.Flag then
+				AegisUI.Values[props.Flag] = value
+			end
+			if not silent then
+				fire(props.Callback, value)
+			end
+			return value
+		end
+
+		local state = props.State
+		if type(state) == "table" and type(state.Get) == "function" then
+			apply(state:Get() == true, true)
+			if type(state.On) == "function" then
+				state:On(function(v)
+					if syncing then return end
+					syncing = true
+					apply(v == true, true)
+					syncing = false
+				end)
+			end
+		else
+			apply(value, true)
+		end
+
+		local function commit(v)
+			syncing = true
+			apply(v, false)
+			if type(state) == "table" and type(state.Set) == "function" then
+				state:Set(value)
+			end
+			syncing = false
+		end
+
+		on(row.MouseButton1Click, function()
+			commit(not value)
+		end)
+
+		local element = elementFor(row, function(v)
+			commit(v == true)
+			return value
+		end, function()
+			return value
+		end)
+		return finish(element, props, row)
+	end
+
+	------------------------------------------------------------------
+	-- segmented: short mutually exclusive choice, State or Flag bound
+	------------------------------------------------------------------
+
+	BUILDERS.Segmented = function(parent, order, props)
+		local options = props.Options or { "One", "Two" }
+		local n = #options
+		if n == 0 then
+			options, n = { "One" }, 1
+		end
+		local value = props.Default or options[1]
+
+		local holder = paint("Frame", {
+			Name = tostring(props.Name or props.Text or "Segmented"),
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 54),
+			BorderSizePixel = 0,
+		}, parent, { BackgroundColor3 = "row" })
+		corner(holder, 8)
+		pstroke(paint, holder, "line", 0.55)
+
+		local label = rowLabel(holder, props.Text or props.Name or "Segmented", 12, -24, "text")
+		label.Position = UDim2.fromOffset(12, 7)
+		label.Size = UDim2.new(1, -24, 0, 16)
+
+		local track = paint("Frame", {
+			Name = "Track",
+			Position = UDim2.fromOffset(12, 30),
+			Size = UDim2.new(1, -24, 0, 22),
+			BorderSizePixel = 0,
+		}, holder, { BackgroundColor3 = "bg" })
+		corner(track, 6)
+
+		local segs = {}
+		for i, opt in ipairs(options) do
+			local btn = create("TextButton", {
+				Name = tostring(opt),
+				Position = UDim2.new((i - 1) / n, 2, 0, 2),
+				Size = UDim2.new(1 / n, -4, 1, -4),
+				BackgroundColor3 = theme.raised,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+			}, track)
+			corner(btn, 4)
+			local lbl = paint("TextLabel", {
+				Name = "Text",
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Font = Enum.Font.Gotham,
+				Text = tostring(opt),
+				TextSize = 11,
+			}, btn, { TextColor3 = "dim" })
+			segs[i] = { button = btn, label = lbl, value = opt }
+		end
+
+		local syncing = false
+		local function apply(v, silent)
+			value = v
+			for _, seg in ipairs(segs) do
+				local active = (seg.value == value)
+				seg.button.BackgroundTransparency = active and 0 or 1
+				seg.label.TextColor3 = active and theme.text or theme.dim
+				seg.label.Font = active and Enum.Font.GothamBold or Enum.Font.Gotham
+			end
+			if props.Flag then
+				AegisUI.Values[props.Flag] = value
+			end
+			if not silent then
+				fire(props.Callback, value)
+			end
+			return value
+		end
+
+		local state = props.State
+		if type(state) == "table" and type(state.Get) == "function" then
+			apply(state:Get(), true)
+			if type(state.On) == "function" then
+				state:On(function(v)
+					if syncing then return end
+					syncing = true
+					apply(v, true)
+					syncing = false
+				end)
+			end
+		else
+			apply(value, true)
+		end
+
+		local function commit(v)
+			syncing = true
+			apply(v, false)
+			if type(state) == "table" and type(state.Set) == "function" then
+				state:Set(v)
+			end
+			syncing = false
+		end
+
+		for _, seg in ipairs(segs) do
+			on(seg.button.MouseButton1Click, function()
+				if seg.value ~= value then
+					commit(seg.value)
+				end
+			end)
+		end
+
+		local element = elementFor(holder, function(v)
+			commit(v)
+			return value
+		end, function()
+			return value
+		end)
+		return finish(element, props, holder)
+	end
+
+	------------------------------------------------------------------
+	-- alert: a tone-edged callout for inline warnings and notes
+	------------------------------------------------------------------
+
+	BUILDERS.Alert = function(parent, order, props)
+		local tone = toneColor(props.Tone or "info")
+		local card = paint("Frame", {
+			Name = "Alert",
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BorderSizePixel = 0,
+		}, parent, { BackgroundColor3 = "row" })
+		corner(card, 8)
+		pstroke(paint, card, "line", 0.6)
+		pad(card, 0, 9, 0, 0)
+
+		local bar = create("Frame", {
+			Name = "Bar",
+			Position = UDim2.fromOffset(0, 8),
+			Size = UDim2.new(0, 3, 1, -16),
+			BackgroundColor3 = tone,
+			BorderSizePixel = 0,
+		}, card)
+		corner(bar, 2)
+
+		local title = paint("TextLabel", {
+			Name = "Title",
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(14, 9),
+			Size = UDim2.new(1, -26, 0, 14),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Font = Enum.Font.GothamBold,
+			Text = tostring(props.Title or "Notice"),
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+		}, card)
+		title.TextColor3 = tone
+
+		local body = paint("TextLabel", {
+			Name = "Body",
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(14, 25),
+			Size = UDim2.new(1, -26, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Font = Enum.Font.Gotham,
+			Text = tostring(props.Text or ""),
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+		}, card, { TextColor3 = "dim" })
+
+		local element = elementFor(card, function(v)
+			body.Text = tostring(v or "")
+			return body.Text
+		end, function()
+			return body.Text
+		end)
+		return finish(element, props, card)
+	end
+
+	------------------------------------------------------------------
+	-- stat: a metric tile (value over label) for dashboards
+	------------------------------------------------------------------
+
+	BUILDERS.Stat = function(parent, order, props)
+		local tone = toneColor(props.Tone or "neutral")
+		local tile = paint("Frame", {
+			Name = tostring(props.Name or props.Label or "Stat"),
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 58),
+			BorderSizePixel = 0,
+		}, parent, { BackgroundColor3 = "row" })
+		corner(tile, 8)
+		pstroke(paint, tile, "line", 0.55)
+
+		local big = paint("TextLabel", {
+			Name = "Value",
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(12, 8),
+			Size = UDim2.new(1, -24, 0, 26),
+			Font = Enum.Font.GothamBlack,
+			Text = tostring(props.Value or "0"),
+			TextSize = 19,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, tile)
+		big.TextColor3 = tone
+
+		paint("TextLabel", {
+			Name = "Label",
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(12, 34),
+			Size = UDim2.new(1, -24, 0, 14),
+			Font = Enum.Font.Gotham,
+			Text = tostring(props.Label or props.Text or ""),
+			TextSize = 10,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}, tile, { TextColor3 = "dim" })
+
+		local element = elementFor(tile, function(v)
+			big.Text = tostring(v)
+			return big.Text
+		end, function()
+			return big.Text
+		end)
+		return finish(element, props, tile)
+	end
+
+	------------------------------------------------------------------
+	-- table: schema-driven rows, flex columns, optional tone chips
+	------------------------------------------------------------------
+
+	BUILDERS.Table = function(parent, order, props)
+		local cols = props.Columns or {}
+		local rowH = props.RowHeight or 26
+		local headH = 22
+		local rows = props.Rows or {}
+
+		local holder = paint("Frame", {
+			Name = tostring(props.Name or "Table"),
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BorderSizePixel = 0,
+		}, parent, { BackgroundColor3 = "bg" })
+		corner(holder, 8)
+		pstroke(paint, holder, "line", 0.6)
+
+		local total = 0
+		for _, c in ipairs(cols) do
+			total = total + (c.Flex or 1)
+		end
+		if total <= 0 then total = 1 end
+
+		local header = create("Frame", {
+			Name = "Header",
+			Size = UDim2.new(1, 0, 0, headH),
+			BackgroundTransparency = 1,
+		}, holder)
+
+		local acc = 0
+		for _, col in ipairs(cols) do
+			local w = (col.Flex or 1) / total
+			paint("TextLabel", {
+				Name = "H:" .. tostring(col.Key or col.Title or ""),
+				BackgroundTransparency = 1,
+				Position = UDim2.new(acc, 10, 0, 0),
+				Size = UDim2.new(w, -14, 1, 0),
+				Font = Enum.Font.GothamBold,
+				Text = tostring(col.Title or col.Key or ""),
+				TextSize = 10,
+				TextXAlignment = (col.Align == "right") and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
+			}, header, { TextColor3 = "dim" })
+			acc = acc + w
+		end
+
+		create("Frame", {
+			Name = "Rule",
+			Position = UDim2.fromOffset(0, headH),
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = theme.line,
+			BackgroundTransparency = 0.4,
+			BorderSizePixel = 0,
+		}, holder)
+
+		local body = create("Frame", {
+			Name = "Rows",
+			Position = UDim2.fromOffset(0, headH + 1),
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+		}, holder)
+		vlist(body, 0)
+
+		local function renderRows()
+			-- Only rows: GetChildren also returns the UIListLayout, and
+			-- destroying that on the first reuse would stack every row at y=0.
+			for _, ch in ipairs(body:GetChildren()) do
+				if ch:IsA("GuiObject") then
+					ch:Destroy()
+				end
+			end
+			for i, row in ipairs(rows) do
+				local rf = create("Frame", {
+					Name = "Row" .. tostring(i),
+					LayoutOrder = i,
+					Size = UDim2.new(1, 0, 0, rowH),
+					BackgroundColor3 = theme.row,
+					BackgroundTransparency = (i % 2 == 0) and 0.55 or 1,
+					BorderSizePixel = 0,
+				}, body)
+
+				local cx = 0
+				for _, col in ipairs(cols) do
+					local w = (col.Flex or 1) / total
+					local val = row[col.Key]
+					if col.Type == "badge" then
+						local chip = chipAt(rf, nil, tostring(val == nil and "" or val),
+								(row[col.ToneKey or "tone"]) or col.Tone, 10)
+						chip.AnchorPoint = Vector2.new(0, 0.5)
+						chip.Position = UDim2.new(cx, 10, 0.5, 0)
+					elseif col.Type == "swatch" then
+						local sw = create("Frame", {
+							Name = "Swatch",
+							AnchorPoint = Vector2.new(0, 0.5),
+							Position = UDim2.new(cx, 10, 0.5, 0),
+							Size = UDim2.fromOffset(14, 14),
+							BackgroundColor3 = val or theme.line,
+							BorderSizePixel = 0,
+						}, rf)
+						corner(sw, 4)
+						pstroke(paint, sw, "line", 0.5)
+					else
+						paint("TextLabel", {
+							Name = "C:" .. tostring(col.Key),
+							BackgroundTransparency = 1,
+							Position = UDim2.new(cx, 10, 0, 0),
+							Size = UDim2.new(w, -14, 1, 0),
+							Font = col.Primary and Enum.Font.GothamSemibold or Enum.Font.Gotham,
+							Text = tostring(val == nil and "" or val),
+							TextSize = 11,
+							TextXAlignment = (col.Align == "right") and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
+							TextTruncate = Enum.TextTruncate.AtEnd,
+						}, rf, { TextColor3 = col.Dim and "dim" or "text" })
+					end
+					cx = cx + w
+				end
+			end
+		end
+
+		renderRows()
+
+		local element = elementFor(holder, function(newRows)
+			rows = newRows or {}
+			renderRows()
+			return rows
+		end, function()
+			return rows
+		end)
+		function element:SetRows(newRows)
+			return element:Set(newRows)
+		end
+		return finish(element, props, holder)
+	end
+
+	------------------------------------------------------------------
+	-- spacer
+	------------------------------------------------------------------
+
+	BUILDERS.Spacer = function(parent, order, props)
+		return create("Frame", {
+			Name = "Spacer",
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, props.Size or 8),
+			BackgroundTransparency = 1,
+		}, parent)
+	end
+
+	-- bind the v3 component set onto any host: the section itself, a group,
+	-- or a column
+	local function install(host, target)
+		host.__frame = target
+		-- A section already owns __dead; overwriting it here made it call
+		-- itself through a tail call and hang. Only derived hosts need the shim.
+		if not host.__dead then
+			host.__dead = function()
+				return section:__dead()
+			end
+		end
+		local order = 0
+		local function nextInHost()
+			order = order + 1
+			return order
+		end
+		for name, build in pairs(BUILDERS) do
+			host["Make" .. name] = function(self, props)
+				if self.__dead and self:__dead() then return nil end
+				return build(target, nextInHost(), props or {})
+			end
+		end
+		return host
+	end
+
+	install(section, contentFrame)
+
+	function section:MakeGroup(props)
+		props = props or {}
+		if section:__dead() then return nil end
+		local g, inner = groupFrame(contentFrame, nextOrder(), props.Text or props.Title, props.Plain)
+		return install({ Frame = g, Content = inner, Elements = {} }, inner)
+	end
+
+	function section:MakeColumns(count, props)
+		props = props or {}
+		if section:__dead() then return nil end
+		local n = math.floor(tonumber(count) or 2)
+		if n < 1 then n = 1 end
+		if n > 4 then n = 4 end
+		local gap = 6
+		local rowFrame = create("Frame", {
+			Name = "Columns",
+			LayoutOrder = nextOrder(),
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+		}, contentFrame)
+		local hosts = {}
+		for i = 1, n do
+			local c, inner = groupFrame(rowFrame, i, props.Text, props.Plain)
+			c.AnchorPoint = Vector2.new(0, 0)
+			c.Position = UDim2.new((i - 1) / n, (i - 1) * gap / n, 0, 0)
+			c.Size = UDim2.new(1 / n, -(n - 1) * gap / n, 0, 0)
+			hosts[i] = install({ Frame = c, Content = inner, Elements = {} }, inner)
+		end
+		return hosts
+	end
+
+	function section:SetBadge(text, tone)
+		if not sectionBadgeChip then return nil end
+		sectionBadgeChip.Text = tostring(text or "")
+		local c = toneColor(tone or sectionTone)
+		sectionBadgeChip.TextColor3 = c
+		sectionBadgeChip.BackgroundColor3 = c
+		return sectionBadgeChip.Text
 	end
 
 	function section:Destroy()
