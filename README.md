@@ -4,7 +4,7 @@ A self-contained Roblox UI library for scripts in this tree. No remote assets, n
 third-party code, no executor global used outside a `pcall`. It is published, so
 consumers normally fetch it over http rather than importing a local file.
 
-Current version: **4.0.0** (see [What's new in 4.0](#whats-new-in-40); the
+Current version: **5.0.0** (see [What's new in 4.0](#whats-new-in-40); the
 [2.0](#whats-new-in-20) section is kept because it explains most of the current
 visual design).
 
