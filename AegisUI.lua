@@ -1,5 +1,5 @@
 --[[
-	AegisUI - v5.0.0
+	AegisUI - v5.0.1
 
 	A self-contained Roblox UI library built to the AegisInject house contract
 	(docs/AUTHORING.md, "Panel lifecycle"). No external assets, no loadstring of
@@ -73,7 +73,7 @@
 local AegisUI = {}
 
 AegisUI.Name    = "AegisUI"
-AegisUI.Version            = "5.0.0"
+AegisUI.Version            = "5.0.1"
 
 --------------------------------------------------------------------------
 -- 0a2. design tokens
@@ -998,14 +998,18 @@ function AegisUI:MakeWindow(options)
 	do
 		local sheen = (Tokens.Effects and Tokens.Effects.sheen)
 			or { top = 0.94, stop = 0.35 }
-		create("UIGradient", {
-			Rotation = 90,
-			Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, sheen.top),
-				NumberSequenceKeypoint.new(sheen.stop, 1),
-				NumberSequenceKeypoint.new(1, 1),
-			}),
-		}, panel)
+		-- REMOVED in 5.0.1. This applied a Transparency ramp (0.94 at the top
+		-- edge, i.e. 94% clear) to the panel ITSELF, so the window became
+		-- see-through at the top: the game world showed through the title bar
+		-- and the tab labels were unreadable against it.
+		--
+		-- The reference is `linear-gradient(rgba(255,255,255,.03),
+		-- rgba(255,255,255,.1))` -- a COLOUR lightening. A UIGradient cannot
+		-- lighten a surface without an alpha ramp, so the correct form is a
+		-- separate overlay Frame carrying the ramp, with the panel's own
+		-- opacity left at 1. That is not this. Until it is built and actually
+		-- looked at on a client, the panel stays opaque.
+		local _ = sheen
 	end
 	win.Panel = panel
 
