@@ -1,5 +1,5 @@
 --[[
-	AegisUI - v4.0.0
+	AegisUI - v5.0.0
 
 	A self-contained Roblox UI library built to the AegisInject house contract
 	(docs/AUTHORING.md, "Panel lifecycle"). No external assets, no loadstring of
@@ -73,8 +73,111 @@
 local AegisUI = {}
 
 AegisUI.Name    = "AegisUI"
-AegisUI.Version = "4.0.0"
+AegisUI.Version            = "5.0.0"
 
+--------------------------------------------------------------------------
+-- 0a2. design tokens
+--
+-- AegisUI ships as ONE file fetched over http, so it cannot readfile() the
+-- canonical module. The values below are that module's, verbatim from
+-- Scripts/AegisUI/AegisUI.Tokens.lua v1.0.0. If the canonical table has been
+-- loaded first and published as getgenv().AegisUI_Tokens, THAT wins and this
+-- block is inert -- one palette, not two, whenever both are present.
+--
+-- No number here was chosen by taste. The palette, radii and durations were
+-- measured off linear.app and raycast.com, and every text pair is WCAG
+-- computed. See notes/aegisui-v5-design-research.md. Changing a value here
+-- without re-running tools/aegisui_design_audit.py breaks the gate silently.
+--------------------------------------------------------------------------
+
+local TOKENS_INTERNAL = {
+ Version = "1.0.0",
+ Raw = {
+  void    = { 7, 8, 10 },
+  base    = { 10, 11, 13 },
+  surface = { 16, 17, 19 },
+  row     = { 24, 25, 28 },
+  hover   = { 34, 35, 39 },
+  raised  = { 44, 46, 52 },
+  line    = { 38, 40, 45 },
+  text    = { 247, 248, 248 },
+  dim     = { 156, 156, 157 },
+  faint   = { 106, 107, 108 },
+  accent  = { 129, 140, 248 },
+  accent2 = { 148, 112, 255 },
+  ok      = { 52, 199, 123 },
+  warn    = { 240, 177, 58 },
+  err     = { 255, 110, 110 },
+ },
+ Motion = { instant = 0.12, fast = 0.20, base = 0.30, slow = 0.40, enter = 0.70 },
+ Easing = {
+  state = { style = "Quint", direction = "Out" },
+  enter = { style = "Cubic", direction = "Out" },
+ },
+ Effects = {
+  -- UIStroke is integer px only, so 1 px white at 0.92 stands in for the
+  -- reference's `inset 0 0 0 0.5px rgba(255,255,255,.08)`.
+  rim       = { thickness = 1, transparency = 0.92 },
+  rimStrong = { thickness = 1, transparency = 0.80 },
+  sheen     = { top = 0.94, mid = 1.00, stop = 0.35 },
+ },
+ -- v4's theme vocabulary, so Tokens.Theme() drops straight into SetTheme.
+ ThemeMap = {
+  bg = "void", surface = "surface", row = "row", hover = "hover",
+  raised = "raised", line = "line", text = "text", dim = "dim",
+  accent = "accent", accent2 = "accent2", ok = "ok", warn = "warn", err = "err",
+ },
+}
+
+local Tokens = (function()
+ local scope = (type(getgenv) == "function" and getgenv()) or _G
+ local supplied = scope and scope.AegisUI_Tokens
+ if type(supplied) == "table" and supplied.Raw and supplied.Motion then
+  return supplied
+ end
+ return TOKENS_INTERNAL
+end)()
+
+if Tokens == TOKENS_INTERNAL then
+ function TOKENS_INTERNAL.Color(name)
+  local t = TOKENS_INTERNAL.Raw[name]
+  if not t then
+   error("AegisUI: unknown token colour '" .. tostring(name) .. "'", 2)
+  end
+  return Color3.fromRGB(t[1], t[2], t[3])
+ end
+
+ function TOKENS_INTERNAL.Theme(patch)
+  local out = {}
+  for key, name in pairs(TOKENS_INTERNAL.ThemeMap) do
+   out[key] = TOKENS_INTERNAL.Color(name)
+  end
+  if type(patch) == "table" then
+   for k, v in pairs(patch) do out[k] = v end
+  end
+  return out
+ end
+
+ -- Nearest measured duration. A builder may pass whatever reads well in its
+ -- own code; the curve and the duration belong to the design system, which
+ -- is what stops the same 0.18/0.2/0.25 drift the audit found per builder.
+ function TOKENS_INTERNAL.Snap(time)
+  local best, gap = TOKENS_INTERNAL.Motion.base, math.huge
+  for _, d in pairs(TOKENS_INTERNAL.Motion) do
+   local g = math.abs(d - time)
+   if g < gap then best, gap = d, g end
+  end
+  return best
+ end
+
+ function TOKENS_INTERNAL.TweenInfo(kind, duration)
+  local e = TOKENS_INTERNAL.Easing[kind] or TOKENS_INTERNAL.Easing.state
+  local d = duration or TOKENS_INTERNAL.Motion[kind] or TOKENS_INTERNAL.Motion.base
+  return TweenInfo.new(d, Enum.EasingStyle[e.style], Enum.EasingDirection[e.direction])
+ end
+end
+
+AegisUI.Tokens = Tokens
 --------------------------------------------------------------------------
 -- 0b. shared state
 --
@@ -351,10 +454,21 @@ end
 local function tween(inst, time, props, style, dir)
 	if TweenService and time and time > 0 then
 		local ok, t = pcall(function()
+			-- One motion service. A caller that names no style gets the measured
+			-- state curve (Quint/Out, the Roblox family of the reference's
+			-- cubic-bezier(0.23,1,0.32,1)) at the nearest measured duration,
+			-- which is what stops 0.18/0.2/0.25 drifting between builders. A
+			-- caller that names a style keeps it AND its exact time: the progress
+			-- bar and the segmented indicator are deliberately not on this curve.
+			local seconds, easeStyle, easeDir = time, style, dir
+			if not style and Tokens.Snap then
+				seconds = Tokens.Snap(time)
+				easeStyle, easeDir = "Quint", "Out"
+			end
 			local info = TweenInfo.new(
-				time,
-				Enum.EasingStyle[style or "Quad"],
-				Enum.EasingDirection[dir or "Out"]
+				seconds,
+				Enum.EasingStyle[easeStyle or "Quad"],
+				Enum.EasingDirection[easeDir or "Out"]
 			)
 			local tw = TweenService:Create(inst, info, props)
 			tw:Play()
@@ -370,8 +484,28 @@ local function tween(inst, time, props, style, dir)
 	return nil
 end
 
--- A stroke whose colour follows a theme key (needs the window's painter).
+-- A hairline edge.
+--
+-- Two recipes, and which one you get is decided by the key:
+--   * key nil or "line" -- the generic box edge. The reference draws this as
+--     white at 8%, not as a solid `line` fill: a solid 1.28x surface colour is
+--     what reads as a dated box outline. It becomes Tokens.Effects.rim, 1 px
+--     white at 0.92, and it no longer needs the painter because it is not a
+--     theme colour.
+--   * any other key -- a SEMANTIC edge (accent on the selected tab, err on a
+--     rejected row). These keep their colour and their caller's transparency,
+--     because flattening a selected-state indicator to 8% white would remove an
+--     affordance rather than modernise it. Left alone deliberately.
 local function pstroke(paint, inst, key, transparency, thickness)
+	if key == nil or key == "line" then
+		local rim = (Tokens.Effects and Tokens.Effects.rim)
+			or { thickness = 1, transparency = 0.92 }
+		return create("UIStroke", {
+			Color = Color3.new(1, 1, 1),
+			Transparency = rim.transparency,
+			Thickness = rim.thickness,
+		}, inst)
+	end
 	return paint("UIStroke", {
 		Transparency = transparency or 0.5,
 		Thickness = thickness or 1,
@@ -856,6 +990,23 @@ function AegisUI:MakeWindow(options)
 		ZIndex = 2,
 	}, gui, { BackgroundColor3 = "bg" })
 	corner(panel, 12)
+	-- Top-edge sheen. The reference's `linear-gradient(rgba(255,255,255,.03),
+	-- rgba(255,255,255,.1))` becomes a Transparency ramp on the surface itself:
+	-- nearly clear at the top edge, fully opaque by 35% down. One instance, no
+	-- extra Frames, and it is the cheapest thing that stops a flat rectangle
+	-- reading as a flat rectangle.
+	do
+		local sheen = (Tokens.Effects and Tokens.Effects.sheen)
+			or { top = 0.94, stop = 0.35 }
+		create("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, sheen.top),
+				NumberSequenceKeypoint.new(sheen.stop, 1),
+				NumberSequenceKeypoint.new(1, 1),
+			}),
+		}, panel)
+	end
 	win.Panel = panel
 
 	local panelScale = create("UIScale", { Scale = 1 }, panel)
@@ -3904,6 +4055,36 @@ function makeSection(tab, sectionSpec)
 		}, parent)
 	end
 
+	-- THE PALETTE VOCABULARY.
+	--
+	-- `kind` describes something a palette can operate on: it has a value or an
+	-- action. It is not a taxonomy of everything the library builds. Divider and
+	-- Spacer are furniture and Group/Columns are hosts, so all four are absent
+	-- on purpose -- a palette that has to skip them is worse than a palette that
+	-- never sees them, and `Set` on a container means nothing.
+	--
+	-- One list, applied by wrapping, rather than sixteen edits to sixteen return
+	-- sites: the next element added gets its kind by adding a line here, and no
+	-- factory can forget to stamp itself.
+	local KINDS = {
+		Label = "label", Paragraph = "paragraph", Button = "button",
+		Toggle = "toggle", Slider = "slider", TextBox = "textbox",
+		Dropdown = "dropdown", Keybind = "keybind", ColorPicker = "colorpicker",
+		Progress = "progress", Badge = "badge", Checkbox = "checkbox",
+		Segmented = "segmented", Alert = "alert", Stat = "stat", Table = "table",
+	}
+
+	-- kind is a field, not an instance, so stamping costs nothing at runtime.
+	local function stamped(kind, build)
+		return function(...)
+			local element = build(...)
+			if type(element) == "table" and element.kind == nil then
+				element.kind = kind
+			end
+			return element
+		end
+	end
+
 	-- bind the v3 component set onto any host: the section itself, a group,
 	-- or a column
 	local function install(host, target)
@@ -3921,15 +4102,30 @@ function makeSection(tab, sectionSpec)
 			return order
 		end
 		for name, build in pairs(BUILDERS) do
+			local kind = KINDS[name]
 			host["Make" .. name] = function(self, props)
 				if self.__dead and self:__dead() then return nil end
-				return build(target, nextInHost(), props or {})
+				local element = build(target, nextInHost(), props or {})
+				if kind and type(element) == "table" and element.kind == nil then
+					element.kind = kind
+				end
+				return element
 			end
 		end
 		return host
 	end
 
 	install(section, contentFrame)
+
+	-- The section's own factories take the same vocabulary. install() above has
+	-- already stamped the builder-backed ones; the guard in stamped() makes a
+	-- double stamp a no-op, so this loop only reaches what is still bare.
+	for name, kind in pairs(KINDS) do
+		local build = section["Make" .. name]
+		if build then
+			section["Make" .. name] = stamped(kind, build)
+		end
+	end
 
 	function section:MakeGroup(props)
 		props = props or {}
